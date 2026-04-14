@@ -20,6 +20,34 @@ class GroupRepo:
             {"id": str(p.id), "n": p.name},
         )
 
+    async def list_payers(self) -> list[Payer]:
+        rows = (await self.s.execute(text("SELECT id, name FROM payers ORDER BY name"))).all()
+        return [Payer(id=r.id, name=r.name) for r in rows]
+
+    async def list_employers(self) -> list[Employer]:
+        rows = (
+            await self.s.execute(
+                text("SELECT id, payer_id, name, external_id FROM employers ORDER BY name")
+            )
+        ).all()
+        return [
+            Employer(id=r.id, payer_id=r.payer_id, name=r.name, external_id=r.external_id)
+            for r in rows
+        ]
+
+    async def delete_subgroup(self, subgroup_id: UUID) -> bool:
+        res = await self.s.execute(
+            text("DELETE FROM subgroups WHERE id = :id"), {"id": str(subgroup_id)}
+        )
+        return (res.rowcount or 0) > 0
+
+    async def delete_employer(self, employer_id: UUID) -> bool:
+        # caller is responsible for cascading subgroups/visibility first
+        res = await self.s.execute(
+            text("DELETE FROM employers WHERE id = :id"), {"id": str(employer_id)}
+        )
+        return (res.rowcount or 0) > 0
+
     async def get_payer(self, payer_id: UUID) -> Payer | None:
         r = (
             await self.s.execute(

@@ -8,6 +8,7 @@ from eligibility_common.errors import Codes, NotFoundError
 from eligibility_common.settings import CommonSettings
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import text
 
 from app.application.commands import change_visibility, upsert_employer
 from app.domain.group import (
@@ -44,6 +45,13 @@ async def post_payer(body: PayerIn) -> PayerOut:
         p = Payer(id=new_id(), name=body.name)
         await repo.insert_payer(p)
         return PayerOut(id=p.id, name=p.name)
+
+
+@router.get("/payers", response_model=list[PayerOut])
+async def list_payers() -> list[PayerOut]:
+    async with session_scope() as s:
+        repo = GroupRepo(s)
+        return [PayerOut(id=p.id, name=p.name) for p in await repo.list_payers()]
 
 
 @router.get("/payers/{payer_id}", response_model=PayerOut)
@@ -191,3 +199,32 @@ async def get_employer_plans(employer_id: UUID) -> PlansOut:
         repo = GroupRepo(s)
         plan_ids = await repo.list_plans_for_employer(employer_id)
         return PlansOut(employer_id=employer_id, plan_ids=plan_ids)
+
+
+@router.delete("/subgroups/{subgroup_id}")
+async def delete_subgroup(subgroup_id: UUID) -> dict:
+    async with session_scope(tenant_id=_tenant()) as s:
+        repo = GroupRepo(s)
+        ok = await repo.delete_subgroup(subgroup_id)
+        if not ok:
+            raise NotFoundError(Codes.MEMBER_NOT_FOUND, f"Subgroup {subgroup_id} not found")
+        return {"deleted": True}
+
+
+@router.delete("/employers/{employer_id}")
+async def delete_employer(employer_id: UUID) -> dict:
+    async with session_scope(tenant_id=_tenant()) as s:
+        repo = GroupRepo(s)
+        # cascade: drop visibility + subgroups first
+        await s.execute(
+            text("DELETE FROM employer_plan_visibility WHERE employer_id = :id"),
+            {"id": str(employer_id)},
+        )
+        await s.execute(
+            text("DELETE FROM subgroups WHERE employer_id = :id"),
+            {"id": str(employer_id)},
+        )
+        ok = await repo.delete_employer(employer_id)
+        if not ok:
+            raise NotFoundError(Codes.MEMBER_NOT_FOUND, f"Employer {employer_id} not found")
+        return {"deleted": True}

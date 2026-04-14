@@ -1,93 +1,150 @@
 # eligibility-group
 
-**Payers / employers / subgroups + plan visibility**
+**Payer / employer / subgroup hierarchy + plan visibility**.
 
-Hierarchy service. A payer (e.g. ICICI) contracts with employers (Swiggy, Zomato). Employers split into subgroups (e.g. regions). `employer_plan_visibility` controls which plans each employer can offer to its members.
+## What this service does
 
-This is part of the **Eligibility & Enrollment Platform** — a distributed microservices system for healthcare eligibility. Each service lives in its own repo so it can be deployed, scaled, and evolved independently.
+Hierarchy: a payer (e.g. ICICI) contracts with employers (Swiggy, Zomato) which split into subgroups. The `employer_plan_visibility` table controls which plans each employer can offer to its members.
+
+Powers the **Groups admin UI** (bonus assignment task) — full CRUD: create/delete payers, employers (with cascade), subgroups, attach/detach plan visibility per employer.
+
+This is **one of 7 microservices** in the [Eligibility & Enrollment Platform](https://github.com/SamieZian/eligibility-platform). Each service has its own repo, its own database, its own Dockerfile, its own deployment lifecycle.
+
+## Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| Docker | 24+ | Container runtime |
+| Docker Compose | v2 (the `docker compose` plugin) | Local orchestration |
+| Python | 3.11+ | Standalone dev (optional) |
+| GNU Make | any recent | Convenience targets (optional) |
+
+The easiest way to use this service is via the orchestration repo:
+```bash
+git clone https://github.com/SamieZian/eligibility-platform
+cd eligibility-platform
+./bootstrap.sh         # clones this repo and 6 siblings
+make up                # boots the whole stack with this svc included
+```
 
 ## Companion repos
 
-| Repo | Purpose |
+| Repo | What |
 |---|---|
-| [`eligibility-platform`](https://github.com/SamieZian/eligibility-platform) | Meta / orchestration — docker-compose, demo flow, 834 sample files |
-| [`eligibility-atlas`](https://github.com/SamieZian/eligibility-atlas) | Enrollment (bitemporal) |
-| [`eligibility-member`](https://github.com/SamieZian/eligibility-member) | Members + dependents |
-| [`eligibility-group`](https://github.com/SamieZian/eligibility-group) | Payers / employers / subgroups / plan visibility |
-| [`eligibility-plan`](https://github.com/SamieZian/eligibility-plan) | Plan catalog |
+| [`eligibility-platform`](https://github.com/SamieZian/eligibility-platform) | Orchestration + docker-compose + sample 834 + demo |
+| [`eligibility-atlas`](https://github.com/SamieZian/eligibility-atlas) | Bitemporal enrollment service |
+| [`eligibility-member`](https://github.com/SamieZian/eligibility-member) | Members + dependents (KMS-encrypted SSN) |
+| [`eligibility-group`](https://github.com/SamieZian/eligibility-group) | Payer / employer / subgroup / plan visibility |
+| [`eligibility-plan`](https://github.com/SamieZian/eligibility-plan) | Plan catalog (Redis cache-aside) |
 | [`eligibility-bff`](https://github.com/SamieZian/eligibility-bff) | GraphQL gateway + file upload |
-| [`eligibility-workers`](https://github.com/SamieZian/eligibility-workers) | Ingestion / projector / outbox-relay |
-| [`eligibility-frontend`](https://github.com/SamieZian/eligibility-frontend) | React UI |
+| [`eligibility-workers`](https://github.com/SamieZian/eligibility-workers) | Stateless workers — ingestion / projector / outbox-relay |
+| [`eligibility-frontend`](https://github.com/SamieZian/eligibility-frontend) | React + TS UI |
 
-## Run the whole platform
-
-Don't run this service solo for demos — go to [`eligibility-platform`](https://github.com/SamieZian/eligibility-platform) and follow the quickstart there.
-
-## Run this service in isolation
+## Quickstart (standalone, with this repo only)
 
 ```bash
-# build
+# 1. Configure
+cp .env.example .env
+# (edit values if needed — defaults work for local docker)
+
+# 2. Build the image
 docker build -t eligibility-group:local .
 
-# run (needs a Postgres — simplest: spin one with docker)
-docker run -d --name pg-local -e POSTGRES_PASSWORD=dev_pw -p 5443:5432 postgres:15-alpine
+# 3. Spin a Postgres for it
+docker run -d --name pg-group \
+  -e POSTGRES_PASSWORD=dev_pw \
+  -p 5443:5432 postgres:15-alpine
 
-# wait 3s, then start the service
-docker run --rm --network host \
-  -e DATABASE_URL="postgresql+psycopg://postgres:dev_pw@localhost:5443/postgres" \
-  -e SERVICE_NAME=group \
-  -e PUBSUB_PROJECT_ID=local \
-  -p 8003:8000 \
+# 4. Run the service against that DB
+docker run --rm -p 6443:8000 \
+  --env-file .env \
+  -e DATABASE_URL=postgresql+psycopg://postgres:dev_pw@host.docker.internal:5443/postgres \
   eligibility-group:local
 
-# health check
-curl http://localhost:8003/livez
+# 5. Health check
+curl http://localhost:6443/livez
 ```
 
-## Project layout
+## Develop locally without Docker
 
-```
-.
-├── app/                 # Hexagonal layout
-│   ├── domain/          # Pure business logic — no I/O
-│   ├── application/     # Use-cases / command handlers
-│   ├── infra/           # Repos, ORM models, KMS adapter
-│   ├── interfaces/      # FastAPI routers, gRPC servicers (future)
-│   ├── settings.py
-│   └── main.py          # FastAPI app factory + lifespan
-├── tests/               # pytest unit tests
-├── migrations/          # Alembic DDL (prod)
-├── libs/                # Vendored shared code
-│   └── python-common/   # Outbox, pubsub, retry, circuit breaker, errors
-├── Dockerfile
-├── pyproject.toml
-└── README.md            # this file
+```bash
+# Python venv
+python3.11 -m venv .venv && source .venv/bin/activate
+
+# Install vendored shared lib + service deps
+pip install -e libs/python-common
+pip install fastapi 'uvicorn[standard]' sqlalchemy asyncpg 'psycopg[binary]' \
+  alembic httpx pydantic pydantic-settings structlog tenacity cryptography \
+  redis google-cloud-pubsub \
+  opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp \
+  opentelemetry-instrumentation-fastapi opentelemetry-instrumentation-sqlalchemy
+
+# Configure
+export $(cat .env | xargs)
+
+# Run
+PYTHONPATH=.:libs/python-common/src python -m app.main
 ```
 
 ## Test
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e libs/python-common
-pip install fastapi sqlalchemy 'psycopg[binary]' asyncpg pydantic pydantic-settings \
-  structlog httpx tenacity cryptography redis google-cloud-pubsub \
-  opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp \
-  opentelemetry-instrumentation-fastapi opentelemetry-instrumentation-sqlalchemy \
-  pytest pytest-asyncio 'strawberry-graphql[fastapi]'
+pip install pytest pytest-asyncio
 PYTHONPATH=.:libs/python-common/src \
   DATABASE_URL=postgresql+psycopg://x@x/x \
   python -m pytest tests -q
 ```
 
+## Project layout (hexagonal)
+
+```
+.
+├── app/
+│   ├── domain/         # Pure business logic — no I/O
+│   ├── application/    # Use-cases, command handlers
+│   ├── infra/          # SQLAlchemy repos, KMS, Redis, ORM models
+│   ├── interfaces/     # FastAPI routers (HTTP)
+│   ├── settings.py     # Pydantic env-driven config
+│   └── main.py         # FastAPI app + lifespan
+├── tests/              # pytest unit tests
+├── migrations/         # Alembic (prod schema migrations)
+├── libs/               # Vendored shared code
+│   └── python-common/  # outbox, pubsub, errors, retry, circuit breaker, kms
+├── .env.example        # All env vars documented
+├── Dockerfile
+├── pyproject.toml
+└── README.md
+```
+
+## Environment variables
+
+See [`.env.example`](.env.example) for the full list with defaults. Required:
+
+- `SERVICE_NAME` — used in logs/traces
+- `DATABASE_URL` — Postgres connection string
+- `PUBSUB_PROJECT_ID` — Pub/Sub project (any value for local emulator)
+- `PUBSUB_EMULATOR_HOST` — `pubsub:8085` when running with compose, unset in prod
+
+Optional:
+- `LOG_LEVEL` (`INFO`)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — when set, traces export to that endpoint
+- `TENANT_DEFAULT` — fallback tenant id when no header
+
 ## API
 
-See `app/interfaces/api.py` for the full route list. Health: `/livez`, `/readyz`.
+See `app/interfaces/api.py` for the route list. Standard endpoints:
 
-## Observability
+- `GET /livez` → liveness probe
+- `GET /readyz` → readiness probe (checks deps reachable)
 
-- `X-Correlation-Id` propagated on every response.
-- Structured JSON logs with `trace_id`, `tenant_id`, correlation id.
-- OpenTelemetry traces exported via OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+## Patterns used
+
+- Hexagonal architecture (domain / application / infra / interfaces)
+- Transactional outbox for at-least-once event delivery
+- Idempotent commands (each command's effect is repeatable)
+- Structured JSON logs with correlation ID propagation
+- OpenTelemetry traces (BFF → service → DB)
+- Circuit breakers on outbound HTTP
 
 ## License
 
