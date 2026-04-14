@@ -66,6 +66,7 @@ app = create_app(
     service_name=settings.service_name,
     lifespan=lifespan,
     readiness={"db": _ping_db},
+    install_idempotency=True,
 )
 app.include_router(router)
 
