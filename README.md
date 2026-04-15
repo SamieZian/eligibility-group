@@ -116,11 +116,72 @@ See `app/interfaces/api.py` for the route list. Standard endpoints:
 - `GET /livez` → liveness probe
 - `GET /readyz` → readiness probe (checks deps reachable)
 
+## Testing via curl
+
+Service listens on port **8003**.
+
+```bash
+BASE=http://localhost:8003
+T=11111111-1111-1111-1111-111111111111
+H=(-H "Content-Type: application/json" -H "X-Tenant-Id: $T")
+```
+
+**Payers**
+
+```bash
+# Create
+PAYER=$(curl -s -X POST $BASE/payers "${H[@]}" \
+  -d '{"name": "United Healthcare"}' | jq -r .id)
+
+# List
+curl -s $BASE/payers -H "X-Tenant-Id: $T" | jq .
+```
+
+**Employers**
+
+```bash
+# Create under a payer
+EMP=$(curl -s -X POST $BASE/employers "${H[@]}" \
+  -d "{\"payer_id\": \"$PAYER\", \"name\": \"Swiggy\", \"external_id\": \"SWIGGY\"}" \
+  | jq -r .id)
+
+# List / find by external_id (used by 834 ingestion to resolve REF*38)
+curl -s "$BASE/employers" -H "X-Tenant-Id: $T" | jq .
+curl -s "$BASE/employers?external_id=SWIGGY" -H "X-Tenant-Id: $T" | jq .
+
+# Delete
+curl -s -X DELETE "$BASE/employers/$EMP" -H "X-Tenant-Id: $T"
+```
+
+**Subgroups** (nested under employer)
+
+```bash
+SUB=$(curl -s -X POST $BASE/subgroups "${H[@]}" \
+  -d "{\"employer_id\": \"$EMP\", \"name\": \"SWIGGY-A\"}" | jq -r .id)
+
+curl -s "$BASE/employers/$EMP/subgroups" -H "X-Tenant-Id: $T" | jq .
+
+curl -s -X DELETE "$BASE/subgroups/$SUB" -H "X-Tenant-Id: $T"
+```
+
+**Plan visibility** (which employer can offer which plan)
+
+```bash
+PLAN=33333333-3333-3333-3333-333333333333
+
+# Attach
+curl -s -X POST $BASE/visibility "${H[@]}" \
+  -d "{\"employer_id\": \"$EMP\", \"plan_id\": \"$PLAN\"}" | jq .
+
+# List plans visible to an employer
+curl -s "$BASE/employers/$EMP/plans" -H "X-Tenant-Id: $T" | jq .
+```
+
 ## Patterns used
 
 - Hexagonal architecture (domain / application / infra / interfaces)
+- SQLAlchemy 2.0 ORM with `pg_insert.on_conflict_do_update` for idempotent upserts
 - Transactional outbox for at-least-once event delivery
-- Idempotent commands (each command's effect is repeatable)
 - Structured JSON logs with correlation ID propagation
 - OpenTelemetry traces (BFF → service → DB)
 - Circuit breakers on outbound HTTP
